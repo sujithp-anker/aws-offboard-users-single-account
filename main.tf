@@ -1,11 +1,11 @@
 locals {
-  user_list = compact(split(",", replace(var.Users, " ", "")))
+  iam_user_list  = compact(split(",", replace(var.iam_users, " ", "")))
+  sso_email_list = compact(split(",", replace(var.sso_emails, " ", "")))
 }
 
 module "user_offboarding" {
   source    = "./modules/aws-offboarding"
-  user_list = local.user_list
-  
-  region                 = var.region
-  cross_account_role_arn = var.cross_account_role_arn
+  iam_list  = local.iam_user_list
+  sso_list  = local.sso_email_list
+  region    = var.region
 }

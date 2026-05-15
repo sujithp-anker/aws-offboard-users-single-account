@@ -1,13 +1,11 @@
-variable "user_list" {
-  type        = list(string)
-  description = "List of users to search and destroy"
+variable "iam_list" {
+  type = list(string)
 }
 
-variable "cross_account_role_arn" {
-  type    = string
-  default = ""
+variable "sso_list" {
+  type = list(string)
 }
 
 variable "region" {
-  type    = string
+  type = string
 }
