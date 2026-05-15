@@ -1,8 +1,16 @@
 data "aws_ssoadmin_instances" "main" {}
 
+# 1. SHARED INSTALLER: This ensures CLI is installed once before anything else runs
+resource "null_resource" "aws_cli_install" {
+  provisioner "local-exec" {
+    command = "if ! command -v aws &> /dev/null; then apk add --no-cache aws-cli; fi"
+  }
+}
+
 # --- PART 1: IAM CLEANUP ---
 resource "null_resource" "iam_cleanup" {
   for_each = toset(var.iam_list)
+  depends_on = [null_resource.aws_cli_install] # Wait for installer
 
   triggers = {
     user = each.value
@@ -10,9 +18,6 @@ resource "null_resource" "iam_cleanup" {
 
   provisioner "local-exec" {
     command = <<EOT
-      # Ensure CLI is installed
-      if ! command -v aws &> /dev/null; then apk add --no-cache aws-cli; fi
-
       USERNAME="${each.value}"
       echo "--- IAM OFFBOARDING: $USERNAME ---"
       
@@ -34,6 +39,7 @@ resource "null_resource" "iam_cleanup" {
 # --- PART 2: SSO CLEANUP ---
 resource "null_resource" "sso_cleanup" {
   for_each = toset(var.sso_list)
+  depends_on = [null_resource.aws_cli_install] # Wait for installer
 
   triggers = {
     email = each.value
@@ -41,15 +47,12 @@ resource "null_resource" "sso_cleanup" {
 
   provisioner "local-exec" {
     command = <<EOT
-      # Ensure CLI is installed
-      if ! command -v aws &> /dev/null; then apk add --no-cache aws-cli; fi
-
       EMAIL="${each.value}"
       ID_STORE="${tolist(data.aws_ssoadmin_instances.main.identity_store_ids)[0]}"
       
       echo "--- SSO OFFBOARDING: $EMAIL ---"
 
-      # Search Identity Center by UserName (which is the email in SSO)
+      # Search Identity Center by UserName (Email)
       USER_ID=$(aws identitystore list-users --identity-store-id $ID_STORE \
         --filters AttributePath=UserName,AttributeValue="$EMAIL" \
         --query "Users[0].UserId" --output text 2>/dev/null || echo "None")
