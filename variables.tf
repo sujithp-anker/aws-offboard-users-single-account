@@ -1,11 +1,12 @@
 variable "Users" {
   type        = string
-  description = "Comma-separated list of usernames to remove (e.g., john.doe, jane.smith)"
+  description = "Comma-separated list of usernames to remove"
 }
 
 variable "cross_account_role_arn" {
   type        = string
-  description = "The ARN of the IAM role to assume in the target account"
+  description = "Optional: IAM role to assume. Leave empty to use Gaia credentials directly."
+  default     = "" 
 }
 
 variable "region" {
