@@ -11,29 +11,40 @@ resource "null_resource" "search_and_destroy_users" {
     command = <<EOT
       set -e
       
-      # 1. ROBUST INSTALLER LOGIC
-      # We use a 'done' file as the ultimate signal that installation is finished
-      if [ ! -f "$(pwd)/aws-installed/bin/aws" ]; then
+      # 1. INSTALLER WITH TIMEOUT AND ERROR HANDLING
+      if [ ! -f "$(pwd)/aws-cli-bin/aws" ]; then
         if mkdir "install_lock" 2>/dev/null; then
-          echo "Downloading Bundled AWS CLI (this may take a minute)..."
-          curl -s "https://s3.amazonaws.com/aws-cli/awscli-bundle.zip" -o "awscli-bundle.zip"
-          unzip -q awscli-bundle.zip
+          # Ensure we cleanup if something goes wrong
+          trap 'rmdir install_lock 2>/dev/null' EXIT
           
-          echo "Executing bundled installer..."
-          # Install to a local directory in the workspace
-          ./awscli-bundle/install -i $(pwd)/aws-installed -b $(pwd)/aws-installed/bin
+          echo "Installing AWS CLI for Alpine..."
+          # Download the V2 CLI specifically for Linux x86_64
+          curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip -q awscliv2.zip
           
-          rm -rf awscli-bundle awscli-bundle.zip
+          # Use the 'dist' folder directly - it's more reliable than the installer script
+          mkdir -p aws-cli-bin
+          cp -r aws/dist/* aws-cli-bin/
+          
+          rm -rf aws awscliv2.zip
           touch "install_complete"
           rmdir "install_lock"
         else
-          echo "Waiting for another process to finish AWS CLI installation..."
-          while [ ! -f "install_complete" ]; do sleep 5; done
+          echo "Waiting for AWS CLI installation..."
+          # Wait up to 60 seconds
+          MAX_WAIT=30
+          COUNT=0
+          while [ ! -f "install_complete" ] && [ $COUNT -lt $MAX_WAIT ]; do 
+            sleep 2
+            COUNT=$((COUNT+1))
+          done
         fi
       fi
 
-      # 2. DEFINE ABSOLUTE PATH
-      AWS_BIN="$(pwd)/aws-installed/bin/aws"
+      # 2. DEFINE BINARY (Use the absolute path to the main binary)
+      # In some Alpine setups, we need to call the interpreter directly
+      AWS_BIN="$(pwd)/aws-cli-bin/aws"
+      chmod +x $AWS_BIN
 
       # 3. SETUP VARIABLES
       USERNAME="${each.value}"
@@ -42,7 +53,6 @@ resource "null_resource" "search_and_destroy_users" {
       echo "--- Processing Offboarding for: $USERNAME ---"
 
       # 4. IAM DELETION
-      # Use absolute path and redirect stderr to avoid shell 'not found' crashes
       IAM_CHECK=$($AWS_BIN iam get-user --user-name "$USERNAME" --query 'User.UserName' --output text 2>/dev/null || echo "NOT_FOUND")
       
       if [ "$IAM_CHECK" = "$USERNAME" ]; then
