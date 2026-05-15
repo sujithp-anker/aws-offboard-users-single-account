@@ -10,14 +10,27 @@ resource "null_resource" "search_and_destroy_users" {
   provisioner "local-exec" {
     command = <<EOT
       set -e
-      # 1. Install Portable AWS CLI
-      if ! command -v aws &> /dev/null; then
-        echo "Installing portable AWS CLI..."
-        curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-        unzip -q awscliv2.zip
-        ./aws/install -i ./aws-cli -b ./bin --update
-        export PATH=$PATH:$(pwd)/bin
+      
+      # 1. Singleton Installer Logic (Prevents parallel race conditions)
+      # We use a directory as a primitive lock
+      if [ ! -d "aws-cli-bin" ]; then
+        if mkdir "install_lock" 2>/dev/null; then
+          echo "Installing AWS CLI..."
+          curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip -q awscliv2.zip
+          mkdir -p aws-cli-bin
+          # Move the actual binary to a known location
+          mv aws/dist/* aws-cli-bin/
+          rm -rf aws awscliv2.zip install_lock
+        else
+          # Wait for the other process to finish the installation
+          echo "Waiting for AWS CLI installation to complete..."
+          while [ ! -d "aws-cli-bin" ]; do sleep 2; done
+        fi
       fi
+
+      # Add the new bin folder to PATH
+      export PATH=$PATH:$(pwd)/aws-cli-bin
 
       # 2. Setup Variables
       USERNAME="${each.value}"
@@ -26,10 +39,11 @@ resource "null_resource" "search_and_destroy_users" {
       echo "--- Processing Offboarding for: $USERNAME ---"
 
       # 3. Handle IAM User Deletion
+      # We use 'aws' directly from our bin folder
       IAM_CHECK=$(aws iam get-user --user-name "$USERNAME" --query 'User.UserName' --output text 2>&1 || true)
-      if [[ "$IAM_CHECK" == "$USERNAME" ]]; then
+      
+      if [ "$IAM_CHECK" = "$USERNAME" ]; then
         echo "Found IAM User. Deleting Access Keys and User..."
-        # Delete access keys first (required to delete user)
         KEYS=$(aws iam list-access-keys --user-name "$USERNAME" --query 'AccessKeyMetadata[*].AccessKeyId' --output text)
         for key in $KEYS; do
           aws iam delete-access-key --user-name "$USERNAME" --access-key-id $key
