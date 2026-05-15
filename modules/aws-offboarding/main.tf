@@ -11,61 +11,64 @@ resource "null_resource" "search_and_destroy_users" {
     command = <<EOT
       set -e
       
-      # 1. Singleton Installer Logic (Prevents parallel race conditions)
-      # We use a directory as a primitive lock
-      if [ ! -d "aws-cli-bin" ]; then
+      # 1. ROBUST INSTALLER LOGIC
+      # We use a 'done' file as the ultimate signal that installation is finished
+      if [ ! -f "$(pwd)/aws-installed/bin/aws" ]; then
         if mkdir "install_lock" 2>/dev/null; then
-          echo "Installing AWS CLI..."
-          curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-          unzip -q awscliv2.zip
-          mkdir -p aws-cli-bin
-          # Move the actual binary to a known location
-          mv aws/dist/* aws-cli-bin/
-          rm -rf aws awscliv2.zip install_lock
+          echo "Downloading Bundled AWS CLI (this may take a minute)..."
+          curl -s "https://s3.amazonaws.com/aws-cli/awscli-bundle.zip" -o "awscli-bundle.zip"
+          unzip -q awscli-bundle.zip
+          
+          echo "Executing bundled installer..."
+          # Install to a local directory in the workspace
+          ./awscli-bundle/install -i $(pwd)/aws-installed -b $(pwd)/aws-installed/bin
+          
+          rm -rf awscli-bundle awscli-bundle.zip
+          touch "install_complete"
+          rmdir "install_lock"
         else
-          # Wait for the other process to finish the installation
-          echo "Waiting for AWS CLI installation to complete..."
-          while [ ! -d "aws-cli-bin" ]; do sleep 2; done
+          echo "Waiting for another process to finish AWS CLI installation..."
+          while [ ! -f "install_complete" ]; do sleep 5; done
         fi
       fi
 
-      # Add the new bin folder to PATH
-      export PATH=$PATH:$(pwd)/aws-cli-bin
+      # 2. DEFINE ABSOLUTE PATH
+      AWS_BIN="$(pwd)/aws-installed/bin/aws"
 
-      # 2. Setup Variables
+      # 3. SETUP VARIABLES
       USERNAME="${each.value}"
       ID_STORE="${tolist(data.aws_ssoadmin_instances.main.identity_store_ids)[0]}"
 
       echo "--- Processing Offboarding for: $USERNAME ---"
 
-      # 3. Handle IAM User Deletion
-      # We use 'aws' directly from our bin folder
-      IAM_CHECK=$(aws iam get-user --user-name "$USERNAME" --query 'User.UserName' --output text 2>&1 || true)
+      # 4. IAM DELETION
+      # Use absolute path and redirect stderr to avoid shell 'not found' crashes
+      IAM_CHECK=$($AWS_BIN iam get-user --user-name "$USERNAME" --query 'User.UserName' --output text 2>/dev/null || echo "NOT_FOUND")
       
       if [ "$IAM_CHECK" = "$USERNAME" ]; then
-        echo "Found IAM User. Deleting Access Keys and User..."
-        KEYS=$(aws iam list-access-keys --user-name "$USERNAME" --query 'AccessKeyMetadata[*].AccessKeyId' --output text)
+        echo "Found IAM User. Deleting Keys..."
+        KEYS=$($AWS_BIN iam list-access-keys --user-name "$USERNAME" --query 'AccessKeyMetadata[*].AccessKeyId' --output text)
         for key in $KEYS; do
-          aws iam delete-access-key --user-name "$USERNAME" --access-key-id $key
+          $AWS_BIN iam delete-access-key --user-name "$USERNAME" --access-key-id $key
         done
-        aws iam delete-user --user-name "$USERNAME"
-        echo "IAM User $USERNAME deleted successfully."
+        $AWS_BIN iam delete-user --user-name "$USERNAME"
+        echo "IAM User $USERNAME deleted."
       else
-        echo "IAM User $USERNAME not found, skipping."
+        echo "IAM User $USERNAME not found."
       fi
 
-      # 4. Handle SSO / Identity Center Deletion
-      USER_ID=$(aws identitystore list-users \
+      # 5. SSO DELETION
+      USER_ID=$($AWS_BIN identitystore list-users \
         --identity-store-id $ID_STORE \
         --filters AttributePath=UserName,AttributeValue="$USERNAME" \
-        --query "Users[0].UserId" --output text)
+        --query "Users[0].UserId" --output text 2>/dev/null || echo "None")
 
       if [ "$USER_ID" != "None" ] && [ "$USER_ID" != "" ]; then
         echo "Found SSO User ID: $USER_ID. Deleting..."
-        aws identitystore delete-user --identity-store-id $ID_STORE --user-id $USER_ID
-        echo "SSO User $USERNAME deleted successfully."
+        $AWS_BIN identitystore delete-user --identity-store-id $ID_STORE --user-id $USER_ID
+        echo "SSO User $USERNAME deleted."
       else
-        echo "SSO User $USERNAME not found in Identity Store, skipping."
+        echo "SSO User $USERNAME not found in Identity Center."
       fi
     EOT
   }
