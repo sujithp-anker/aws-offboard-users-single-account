@@ -10,7 +10,7 @@ resource "null_resource" "aws_cli_install" {
 # --- PART 1: IAM CLEANUP ---
 resource "null_resource" "iam_cleanup" {
   for_each = toset(var.iam_list)
-  depends_on = [null_resource.aws_cli_install] # Wait for installer
+  depends_on = [null_resource.aws_cli_install]
 
   triggers = {
     user = each.value
