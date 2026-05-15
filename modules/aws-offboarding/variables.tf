@@ -1,14 +1,13 @@
 variable "user_list" {
   type        = list(string)
-  description = "Cleaned list of usernames to be offboarded"
+  description = "List of users to search and destroy"
 }
 
 variable "cross_account_role_arn" {
-  type        = string
-  description = "The ARN of the IAM role to assume in the target account"
+  type    = string
+  default = ""
 }
 
 variable "region" {
-  type        = string
-  description = "AWS region for the operations"
+  type    = string
 }

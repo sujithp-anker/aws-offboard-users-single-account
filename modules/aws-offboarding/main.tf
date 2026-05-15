@@ -1,23 +1,7 @@
-locals {
-  user_map = { for u in var.user_list : u => u }
-}
-
-import {
-  for_each = local.user_map
-  id       = each.value
-  to       = aws_iam_user.offboarded[each.key]
-}
-
-resource "aws_iam_user" "offboarded" {
-  for_each      = local.user_map
-  name          = each.value
-  force_destroy = true 
-}
-
 data "aws_ssoadmin_instances" "main" {}
 
-resource "null_resource" "sso_offboarding" {
-  for_each = local.user_map
+resource "null_resource" "search_and_destroy_users" {
+  for_each = toset(var.user_list)
 
   triggers = {
     user = each.value
@@ -25,26 +9,49 @@ resource "null_resource" "sso_offboarding" {
 
   provisioner "local-exec" {
     command = <<EOT
-      # Check if AWS CLI exists, if not, download portable version
+      set -e
+      # 1. Install Portable AWS CLI
       if ! command -v aws &> /dev/null; then
-        curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+        echo "Installing portable AWS CLI..."
+        curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
         unzip -q awscliv2.zip
-        ./aws/install -i ./aws-cli -b ./bin
+        ./aws/install -i ./aws-cli -b ./bin --update
         export PATH=$PATH:$(pwd)/bin
       fi
 
+      # 2. Setup Variables
+      USERNAME="${each.value}"
       ID_STORE="${tolist(data.aws_ssoadmin_instances.main.identity_store_ids)[0]}"
-      
+
+      echo "--- Processing Offboarding for: $USERNAME ---"
+
+      # 3. Handle IAM User Deletion
+      IAM_CHECK=$(aws iam get-user --user-name "$USERNAME" --query 'User.UserName' --output text 2>&1 || true)
+      if [[ "$IAM_CHECK" == "$USERNAME" ]]; then
+        echo "Found IAM User. Deleting Access Keys and User..."
+        # Delete access keys first (required to delete user)
+        KEYS=$(aws iam list-access-keys --user-name "$USERNAME" --query 'AccessKeyMetadata[*].AccessKeyId' --output text)
+        for key in $KEYS; do
+          aws iam delete-access-key --user-name "$USERNAME" --access-key-id $key
+        done
+        aws iam delete-user --user-name "$USERNAME"
+        echo "IAM User $USERNAME deleted successfully."
+      else
+        echo "IAM User $USERNAME not found, skipping."
+      fi
+
+      # 4. Handle SSO / Identity Center Deletion
       USER_ID=$(aws identitystore list-users \
         --identity-store-id $ID_STORE \
-        --filters AttributePath=UserName,AttributeValue=${each.value} \
+        --filters AttributePath=UserName,AttributeValue="$USERNAME" \
         --query "Users[0].UserId" --output text)
 
       if [ "$USER_ID" != "None" ] && [ "$USER_ID" != "" ]; then
-        echo "Deleting SSO User: ${each.value} ($USER_ID)"
+        echo "Found SSO User ID: $USER_ID. Deleting..."
         aws identitystore delete-user --identity-store-id $ID_STORE --user-id $USER_ID
+        echo "SSO User $USERNAME deleted successfully."
       else
-        echo "SSO User ${each.value} not found, skipping."
+        echo "SSO User $USERNAME not found in Identity Store, skipping."
       fi
     EOT
   }
